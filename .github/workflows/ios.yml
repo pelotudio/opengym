@@ -1,0 +1,62 @@
+# Builds an UNSIGNED openGym .ipa on a GitHub macOS runner, to be signed and
+# installed from Windows with Sideloadly (free Apple ID, re-sign every 7 days).
+# Goes in the fork at .github/workflows/ios.yml. Run it from Actions → "iOS IPA" → Run workflow.
+name: iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    env:
+      # ch.duartesantos.opengym belongs to the original author; a free Apple ID can't register it.
+      BUNDLE_ID: io.github.${{ github.repository_owner }}.opengym
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+        working-directory: frontend
+
+      # Mobile flavor (no backend, data on the phone) + copy into ios/ + pod install
+      - run: npm run build:mobile
+        working-directory: frontend
+
+      - name: Set own bundle id
+        working-directory: frontend/ios/App
+        run: |
+          id=$(echo "$BUNDLE_ID" | tr '[:upper:]' '[:lower:]')
+          sed -i '' "s/ch\.duartesantos\.opengym/$id/g" App.xcodeproj/project.pbxproj
+          grep -m1 PRODUCT_BUNDLE_IDENTIFIER App.xcodeproj/project.pbxproj
+
+      - name: Build unsigned archive
+        working-directory: frontend/ios/App
+        run: |
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Package .ipa
+        run: |
+          cd "$RUNNER_TEMP"
+          mkdir Payload
+          cp -R App.xcarchive/Products/Applications/App.app Payload/
+          zip -qry openGym.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openGym-ipa
+          path: ${{ runner.temp }}/openGym.ipa
+          retention-days: 30
